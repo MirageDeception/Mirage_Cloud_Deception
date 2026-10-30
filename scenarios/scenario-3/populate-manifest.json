@@ -1,0 +1,62 @@
+{
+  "scenarioId": "scenario-3",
+  "version": 1,
+  "seeds": [
+    {
+      "label": "IAM lure role (no seed content)",
+      "category": "iam",
+      "sdkOperation": "none",
+      "fakeDataFile": null
+    },
+    {
+      "label": "Database master credentials parameter",
+      "category": "ssm",
+      "matchContains": "master-credentials",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "database-master-credentials.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "GitHub deploy token parameter",
+      "category": "ssm",
+      "matchContains": "github-deploy-token",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "github-deploy-token.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Datadog API keys parameter",
+      "category": "ssm",
+      "matchContains": "datadog-api-keys",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "datadog-api-keys.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "VPN admin credentials parameter",
+      "category": "ssm",
+      "matchContains": "admin-credentials",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "vpn-admin-credentials.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "EKS cluster-admin kubeconfig parameter",
+      "category": "ssm",
+      "matchContains": "kubeconfig",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "eks-kubeconfig.yaml",
+      "format": "yaml",
+      "ssmType": "String",
+      "ssmTier": "Advanced"
+    }
+  ]
+}

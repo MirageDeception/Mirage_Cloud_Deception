@@ -1,0 +1,42 @@
+# Type-checks, builds and self-checks the portal on every change to it, so a PR
+# that would break the hub's `npm run build` is caught before it reaches main.
+name: Portal
+
+on:
+  pull_request:
+    paths:
+      - 'portal/**'
+      - 'scripts/check-*.sh'
+      - '.github/workflows/portal.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - 'scripts/check-*.sh'
+      - '.github/workflows/portal.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # what the hub runs
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Type-check
+        run: npx tsc --noEmit -p .
+      - name: Self-checks (scripts/check-*.sh)
+        run: for f in scripts/check-*.sh; do echo "== $f"; bash "$f"; done
+        working-directory: .
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+      - name: Lint
+        run: npm run lint

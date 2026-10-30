@@ -1,0 +1,21 @@
+{
+  "scenarioId": "scenario-1",
+  "version": 1,
+  "seeds": [
+    {
+      "label": "IAM lure role (no seed content)",
+      "category": "iam",
+      "sdkOperation": "none",
+      "fakeDataFile": null
+    },
+    {
+      "label": "Terraform state file (fake infra secrets)",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "terraform.tfstate",
+      "format": "json",
+      "s3Key": "env/production/terraform.tfstate",
+      "contentType": "application/json"
+    }
+  ]
+}

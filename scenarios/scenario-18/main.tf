@@ -1,0 +1,166 @@
+# NOTE TO OPEN-SOURCE USERS:
+# The resources in this scenario have been deployed with realistic, hardcoded names by default.
+# You can safely rename any resource manually in this file to fit your environment's naming conventions.
+
+variable "account_id" {
+  description = "AWS Account ID"
+  type        = string
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+variable "role_name" {
+  description = "Name of the discovery IAM role"
+  type        = string
+  default     = "infra-params-readonly-role"
+}
+
+variable "parameter_name" {
+  description = "Name of the SSM parameter (primary, headline data store -- head of the breadcrumb chain)"
+  type        = string
+  default     = "/prod/db/primary"
+}
+
+data "aws_region" "current" {}
+
+resource "aws_iam_role" "infra_params_readonly_role" {
+  name                 = var.role_name
+  description          = "Read-only infrastructure parameter access for SRE team"
+  max_session_duration = 3600
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.account_id}:root"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}
+
+resource "aws_iam_policy" "infra_params_readonly_policy" {
+  name = "infra-params-readonly-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SSMDescribeAll"
+        Effect   = "Allow"
+        Action   = ["ssm:DescribeParameters"]
+        Resource = "*"
+      },
+      {
+        Sid    = "SSMReadProdDb"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = "arn:aws:ssm:${data.aws_region.current.name}:${var.account_id}:parameter/prod/db/*"
+      },
+      {
+        Sid    = "SSMGetByPath"
+        Effect = "Allow"
+        Action = ["ssm:GetParametersByPath"]
+        Resource = [
+          "arn:aws:ssm:${data.aws_region.current.name}:${var.account_id}:parameter/prod/db",
+          "arn:aws:ssm:${data.aws_region.current.name}:${var.account_id}:parameter/prod/db/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "infra_params_readonly_attach" {
+  role       = aws_iam_role.infra_params_readonly_role.name
+  policy_arn = aws_iam_policy.infra_params_readonly_policy.arn
+}
+
+resource "aws_ssm_parameter" "db_primary_param" {
+  name        = var.parameter_name
+  description = "Production primary database connection configuration"
+  type        = "String"
+  tier        = "Standard"
+  value       = "{\"placeholder\": \"replaced-by-deploy-script\"}"
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}
+
+resource "aws_ssm_parameter" "db_replica_param" {
+  name        = "/prod/db/replica"
+  description = "Production read replica database connection configuration"
+  type        = "String"
+  tier        = "Standard"
+  value       = "{\"placeholder\": \"replaced-by-deploy-script\"}"
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}
+
+resource "aws_ssm_parameter" "db_backup_config_param" {
+  name        = "/prod/db/backup-config"
+  description = "Production database backup configuration and S3 storage"
+  type        = "String"
+  tier        = "Standard"
+  value       = "{\"placeholder\": \"replaced-by-deploy-script\"}"
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}
+
+resource "aws_ssm_parameter" "db_encryption_config_param" {
+  name        = "/prod/db/encryption-config"
+  description = "Production database encryption and TLS configuration"
+  type        = "String"
+  tier        = "Standard"
+  value       = "{\"placeholder\": \"replaced-by-deploy-script\"}"
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}
+
+resource "aws_ssm_parameter" "db_monitoring_param" {
+  name        = "/prod/db/monitoring"
+  description = "Production database monitoring and alerting integration"
+  type        = "String"
+  tier        = "Standard"
+  value       = "{\"placeholder\": \"replaced-by-deploy-script\"}"
+
+  tags = {
+    Environment = "production"
+    Project     = "core-infrastructure"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-3100"
+  }
+}

@@ -1,0 +1,13 @@
+[
+  { "ParameterKey": "ResourcePrefix", "ParameterValue": "mirage-ops" },
+  { "ParameterKey": "OrgId", "ParameterValue": "o-xxxxxxxxxx" },
+  { "ParameterKey": "AccessMode", "ParameterValue": "public" },
+  { "ParameterKey": "AllowedCidr", "ParameterValue": "203.0.113.42/32" },
+  { "ParameterKey": "SshPublicKey", "ParameterValue": "ssh-ed25519 AAAA... you@example.com" },
+  { "ParameterKey": "AdditionalTrustedPrincipalArns", "ParameterValue": "" },
+  { "ParameterKey": "BreakGlassAdminArns", "ParameterValue": "" },
+  { "ParameterKey": "InstanceType", "ParameterValue": "t3.medium" },
+  { "ParameterKey": "RootVolumeGb", "ParameterValue": "30" },
+  { "ParameterKey": "RepoUrl", "ParameterValue": "https://github.com/MirageDeception/Mirage_Cloud_Deception.git" },
+  { "ParameterKey": "RepoRef", "ParameterValue": "main" }
+]

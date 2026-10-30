@@ -1,0 +1,24 @@
+hub_account_id  = "<your-hub-account-id>"
+org_id          = "<your-aws-org-id>"
+resource_prefix = "mirage-ops"
+
+# Instance role assumes this hub role, bound to on-box use via the STS VPC
+# endpoint (SourceVpce) once the vpc/ module is applied. Break-glass = ADMIN
+# SSO role (self-mod lock). The instance-role ARN is stable across recreate
+# (name "<resource_prefix>-portal-instance-role"), so this can be set ahead of
+# the ec2/ module's first apply.
+portal_instance_role_arn   = "arn:aws:iam::<your-hub-account-id>:role/<resource_prefix>-portal-instance-role"
+portal_sts_vpc_endpoint_id = "<sts-vpc-endpoint-id-from-vpc-module-output>"
+role_admin_arns = [
+  "arn:aws:iam::<your-hub-account-id>:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ADMIN_EXAMPLE",
+]
+
+# allowed_sso_user_ids defaults are set in variables.tf.
+# To add/remove users, override here. Get the UserId from:
+#   aws sts get-caller-identity --profile hub-profile --query UserId
+# Format: <RoleId>:<email>  e.g. "AROAEXAMPLE123456789:you@example.com"
+#
+# allowed_sso_user_ids = [
+#   "AROAEXAMPLE123456789:you@example.com",
+#   "AROAEXAMPLE987654321:teammate@example.com",
+# ]

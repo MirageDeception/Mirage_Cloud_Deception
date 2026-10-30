@@ -1,0 +1,59 @@
+# ── Terraform ────────────────────────────────────────────────────────────────
+# Provider plugins / lock caches (hundreds of MB of binaries).
+**/.terraform/
+crash.log
+crash.*.log
+*.tfplan
+# Terraform state + var files: EXCLUDED from git (contain resource ARNs and account
+# ids). Commit *.tfvars.example templates instead.
+*.tfstate
+*.tfstate.*
+*.tfvars
+# Exception: a scenario's fake-data/ may ship a FAKE tfstate as decoy content
+# (scenario-1's lure). Without this it is silently dropped and Populate fails.
+!scenarios/*/fake-data/*.tfstate
+
+# ── Hub bootstrap (real deployment parameters, not the example template) ─────────
+hub/parameters.json
+
+# ── Node / Next.js (portal) ────────────────────────────────────────────────────
+node_modules/
+.next/
+dist/
+build/
+*.tsbuildinfo
+
+# ── Secrets / env (portal runtime) ───────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Portal runtime state (file-based backend; regenerated, not source) ───────────
+portal/states/
+portal/db_*.json
+
+# ── Per-account onboarding state (onboard-spoke.sh writes .state/<acct>/) ─────────
+**/.state/
+
+# ── Handover bundles (built artifacts, not source) ───────────────────────────────
+*.zip
+
+# ── OS / editor cruft ────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# abuse-all.sh run logs: capture decoy secret values and account ids. Never commit.
+scripts/abuse-results/
+
+# probe-decoys.sh run logs: capture decoy content read from live decoys. Never commit.
+scripts/probe-results/
+
+# ── Portal data (synced official scenarios, private custom scenarios) ─────────
+/data/
+
+# ── Python ───────────────────────────────────────────────────────────────────────
+__pycache__/

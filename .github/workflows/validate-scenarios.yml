@@ -1,0 +1,30 @@
+# Rejects a scenario change that breaks the portal's contract before it can reach
+# main -- and, through GitHub sync, every install.
+name: Validate scenarios
+
+on:
+  pull_request:
+    paths:
+      - 'scenarios/**'
+      - 'scripts/validate-*.py'
+      - 'portal/src/lib/decoy-match.ts'
+  push:
+    branches: [main]
+    paths:
+      - 'scenarios/**'
+      - 'scripts/validate-*.py'
+      - 'portal/src/lib/decoy-match.ts'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+      - name: Official scenarios (contract + terraform validate)
+        run: python3 scripts/validate-scenario.py --terraform
+      - name: Starter template passes the custom-upload rules
+        run: python3 scripts/validate-scenario.py --strict --terraform scenarios/_template

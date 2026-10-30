@@ -1,0 +1,14 @@
+{
+  "scenarioId": "scenario-13",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure role (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Payment service application logs (leaked creds in log lines)",
+      "category": "logs",
+      "sdkOperation": "logs:PutLogEvents",
+      "fakeDataFile": "log-entries.json",
+      "format": "json"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# To ADOPT an existing VPC instead of creating one, set vpc_id below (the
+# module then manages subnets/NAT/endpoints within it and does not create a
+# VPC). Leave vpc_id empty to create a new VPC from vpc_cidr.
+region          = "us-west-2"
+resource_prefix = "mirage-ops"
+# vpc_id   = "<your-vpc-id>"
+vpc_cidr   = "10.90.0.0/16"
+az_count   = 2
+enable_nat = true

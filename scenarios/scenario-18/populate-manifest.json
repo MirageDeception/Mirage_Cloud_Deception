@@ -1,0 +1,57 @@
+{
+  "scenarioId": "scenario-18",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure role (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Primary database connection parameter",
+      "category": "ssm",
+      "matchContains": "/primary",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "db-primary.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Read replica connection parameter",
+      "category": "ssm",
+      "matchContains": "/replica",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "db-replica.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Backup configuration parameter",
+      "category": "ssm",
+      "matchContains": "backup-config",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "db-backup-config.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Field-level encryption config parameter",
+      "category": "ssm",
+      "matchContains": "encryption-config",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "db-encryption-config.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Database monitoring parameter",
+      "category": "ssm",
+      "matchContains": "monitoring",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "db-monitoring.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    }
+  ]
+}

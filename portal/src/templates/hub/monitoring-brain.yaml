@@ -1,0 +1,671 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Mirage Hub Account Base Infrastructure.
+  Creates the SNS Alerts Topic, the Central Event Processor Lambda, and the Global EventBus.
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: mirage-ops
+    Description: >
+      Prefix for every hub-infra resource this stack creates (roles, bus,
+      tables, topic, functions). Must match the ResourcePrefix used for
+      hub/hub-bootstrap.yaml -- that stack's roles are granted permissions
+      scoped to resources named with that same prefix, and will not be able
+      to manage anything this stack creates under a different one.
+
+  AlertLabel:
+    Type: String
+    Default: MIRAGE
+    Description: Human-readable tag in the alert email subject line, e.g. "[MIRAGE] Unauthorized access - S3 - GetObject".
+
+  WhitelistedARNs:
+    Type: String
+    # Roster derived 2026-10-01 from a full scan of mirage-alerts (110 items,
+    # ALL of them false positives). These 9 names account for 93 of the 110.
+    # Entries are matched by EXACT ROLE NAME, so wildcards do NOT work -- each
+    # AWSServiceRoleFor* role has to be listed individually. A bare name and a
+    # ":role/<name>" fragment both work (the Lambda takes the last '/' segment),
+    # bare is preferred for clarity.
+    #
+    # DELIBERATELY NOT LISTED: AWSReservedSSO_ADMIN_* (17 alerts). That is
+    # the human operator role. Suppressing it would blind the platform to the
+    # exact insider-threat behaviour Mirage exists to catch, so its alerts are
+    # left noisy on purpose -- read decoy content from scenario source or
+    # tfstate instead of with admin credentials.
+    #
+    # TRADEOFF ON <prefix>-spoke-deployment-role (32 alerts): it trips decoys
+    # during legitimate deploy/teardown, which is pure self-noise, but it is also
+    # a high-value target (it can create IAM). Whitelisting it means a compromise
+    # of that role would not be caught by decoy reads. Accepted because misuse of
+    # that role is better detected on its IAM actions than on decoy access.
+    #
+    # The AWSServiceRoleFor* entries are AWS's own scanners (Config, Resource
+    # Explorer, Access Analyzer, ...), which touch every new resource -- decoys
+    # included -- within minutes of creation.
+    #
+    # CloudFormation Parameter defaults cannot reference another parameter, so
+    # this literal "mirage-ops-..." only matches if you keep ResourcePrefix at
+    # its default -- update this value too if you change ResourcePrefix. The
+    # Deploy Brain page sends its own prefix-aware default, which wins.
+    Default: "mirage-ops-spoke-deployment-role,AWSServiceRoleForConfig,AWSServiceRoleForResourceExplorer,AWSServiceRoleForAccessAnalyzer,AWSServiceRoleForTrustedAdvisor,AWSServiceRoleForComputeOptimizer"
+    Description: >
+      Comma-separated roles whose decoy access is NOT alerted on. Matched by
+      exact role name (last '/' segment), never as an ARN substring -- so
+      wildcards such as AWSServiceRoleFor* do not work, list each one.
+
+  OrgId:
+    Type: String
+    Default: ""
+    Description: >
+      AWS Organizations id (o-xxxx). When set, the event bus accepts PutEvents
+      from any account in the org (all spokes). Empty restricts PutEvents to the
+      hub account only. Required for cross-account spoke forwarding to work.
+
+  AuditLogsBucketName:
+    Type: String
+    Default: ""
+    Description: >
+      Name of the host/operator audit-logs bucket (EC2 auditd/sudo/SSM logs).
+      Leave empty to auto-name <prefix>-audit-logs-<account>-<region>.
+
+  PortalInstanceRoleArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the EC2 portal instance role (from ec2/). When set, it is granted
+      PutObject on the audit-logs bucket prefix via the bucket policy. Empty skips.
+
+Conditions:
+  HasAuditBucketName: !Not [!Equals [!Ref AuditLogsBucketName, ""]]
+  HasInstanceRole: !Not [!Equals [!Ref PortalInstanceRoleArn, ""]]
+  HasOrgId: !Not [!Equals [!Ref OrgId, ""]]
+
+Resources:
+
+  V2AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ResourcePrefix}-alerts'
+      # Tags: To be discussed (OPSEC)
+
+  V2LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: mirage-ops-sns-publish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowSNSPublish
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref V2AlertsTopic
+        # Append-only: PutItem and nothing else. The Lambda creates detections;
+        # it never reads, edits or deletes one, and cannot touch mirage-state.
+        - PolicyName: mirage-ops-alerts-put
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowAlertsPutItem
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt MirageAlertsTable.Arn
+      # Tags: To be discussed (OPSEC)
+
+  V2EventProcessor:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - V2LambdaExecutionRole
+      - V2AlertsTopic
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}-event-processor'
+      Runtime: python3.11
+      Architectures:
+        - x86_64
+      Handler: index.lambda_handler
+      Role: !GetAtt V2LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref V2AlertsTopic
+          WHITELISTED_ARNS: !Ref WhitelistedARNs
+          ALERTS_TABLE_NAME: !Ref MirageAlertsTable
+          ALERT_LABEL: !Ref AlertLabel
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import time
+
+          sns = boto3.client('sns')
+          ddb = boto3.resource('dynamodb')
+          SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+          ALERTS_TABLE_NAME = os.environ.get('ALERTS_TABLE_NAME', '')
+          ALERT_LABEL = os.environ.get('ALERT_LABEL', 'MIRAGE')
+          ALERT_TTL_SECONDS = 365 * 24 * 60 * 60
+          # DynamoDB items cap at 400 KB; CloudTrail details are far smaller, but
+          # truncate defensively so one oversized event cannot fail the write.
+          RAW_DETAIL_MAX = 30000
+          
+          # Parse dynamic whitelist. Entries may be written as ":role/Name", a full
+          # IAM ARN, or a bare "Name" -- all reduce to the role NAME, which is what
+          # we compare. See is_whitelisted() for why this is not a substring test.
+          whitelist_str = os.environ.get('WHITELISTED_ARNS', '')
+          WHITELISTED_ARNS = [arn.strip() for arn in whitelist_str.split(',') if arn.strip()]
+          WHITELISTED_ROLE_NAMES = {w.rstrip('/').split('/')[-1] for w in WHITELISTED_ARNS}
+
+          def caller_role_name(caller_arn):
+              """Role name out of either ARN spelling CloudTrail may report.
+
+              arn:aws:sts::<acct>:assumed-role/<Role>/<session>  -> <Role>
+              arn:aws:iam::<acct>:role/<Role>                    -> <Role>
+              """
+              if ':assumed-role/' in caller_arn:
+                  return caller_arn.split(':assumed-role/')[1].split('/')[0]
+              if ':role/' in caller_arn:
+                  return caller_arn.split(':role/')[1].split('/')[0]
+              return ''
+
+          def is_whitelisted(caller_arn):
+              """Exact role-name match, deliberately NOT a substring test on the ARN.
+
+              Two bugs this avoids:
+              1) A pattern like ":role/WizScanner-Role" never appears in
+                 ":assumed-role/WizScanner-Role/<session>", which is what CloudTrail
+                 actually writes for a role session -- so the old substring test
+                 suppressed nothing and had fired zero times since deploy.
+              2) Matching a bare name anywhere in the ARN would let an attacker pick
+                 a SESSION name containing it and suppress their own alert. A decoy
+                 platform must not have an attacker-controllable suppression path,
+                 so only the role component is compared.
+              """
+              if not caller_arn:
+                  return False
+              name = caller_role_name(caller_arn)
+              return bool(name) and name in WHITELISTED_ROLE_NAMES
+
+          RESOURCE_TYPE_MAP = {
+              'aws.s3':             'S3',
+              'aws.ssm':            'SSM',
+              'aws.secretsmanager': 'SecretsManager',
+              'aws.ecr':            'ECR',
+              'aws.lambda':         'Lambda',
+              'aws.iam':            'IAM',
+              'aws.sts':            'STS',
+              'aws.ec2':            'EC2',
+              'aws.dynamodb':       'DynamoDB',
+              'aws.sqs':            'SQS',
+              'aws.sns':            'SNS',
+              'aws.logs':           'CloudWatch Logs',
+              'aws.kms':            'KMS',
+              'aws.cloudformation': 'CloudFormation'
+          }
+
+          def get_resource_name(source, params):
+              if source == 'aws.s3':
+                  bucket = params.get('bucketName', 'Unknown')
+                  key = params.get('key', '')
+                  return f"{bucket}/{key}" if key else bucket
+              elif source == 'aws.ssm':
+                  return params.get('name', 'Unknown')
+              elif source == 'aws.secretsmanager':
+                  sid = params.get('secretId', 'Unknown')
+                  return sid.split(':')[-1] if sid.startswith('arn:') else sid
+              elif source == 'aws.ecr':
+                  return params.get('repositoryName', 'Unknown')
+              elif source == 'aws.lambda':
+                  return params.get('functionName', 'Unknown')
+              elif source == 'aws.iam':
+                  return params.get('roleName', 'Unknown')
+              elif source == 'aws.sts':
+                  role_arn = params.get('roleArn', '')
+                  return role_arn.split('/')[-1] if role_arn else 'Unknown'
+              elif source == 'aws.dynamodb':
+                  return params.get('tableName', 'Unknown')
+              elif source == 'aws.sqs':
+                  url = params.get('queueUrl', '')
+                  return url.split('/')[-1] if url else 'Unknown'
+              elif source == 'aws.kms':
+                  return params.get('keyId', 'Unknown')
+              elif source == 'aws.cloudformation':
+                  return params.get('stackName', 'Unknown')
+              elif source == 'aws.sns':
+                  # SNS reports the topic under topicArn for most operations but
+                  # resourceArn for ListTagsForResource -- measured 2026-10-10. With
+                  # neither branch here, 56 of 268 alerts carried resourceName=Unknown.
+                  arn = params.get('topicArn') or params.get('resourceArn') or ''
+                  return arn.split(':')[-1] if arn else 'Unknown'
+              elif source == 'aws.logs':
+                  return params.get('logGroupName', 'Unknown')
+              return 'Unknown'
+
+          def persist_alert(event, context, detail, source, event_name,
+                            resource_type, resource_name, caller_arn, message):
+              """Append a detection to mirage-alerts.
+
+              Best-effort by design: never raises, so a DynamoDB problem can
+              never block the SNS/SOAR delivery path above.
+
+              The id is the CloudTrail eventID, which is already a UUID and is
+              unique per event. That makes the sort key deterministic, so with
+              attribute_not_exists(PK) an at-least-once EventBridge redelivery
+              is a no-op instead of a duplicate row -- and critically cannot
+              reset a status an analyst has already moved.
+              """
+              if not ALERTS_TABLE_NAME:
+                  print('[WARN] ALERTS_TABLE_NAME unset - detection not persisted')
+                  return
+
+              alert_id = detail.get('eventID') or context.aws_request_id
+              ts = detail.get('eventTime') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+              account_id = detail.get('recipientAccountId') or event.get('account') or 'unknown'
+
+              raw_detail = json.dumps(detail, default=str)
+              if len(raw_detail) > RAW_DETAIL_MAX:
+                  raw_detail = raw_detail[:RAW_DETAIL_MAX] + '...[truncated]'
+
+              try:
+                  ddb.Table(ALERTS_TABLE_NAME).put_item(
+                      Item={
+                          'PK': f'DETECTION#{account_id}',
+                          'SK': f'ALERT#{ts}-{alert_id}',
+                          'id': alert_id,
+                          'timestamp': ts,
+                          'accountId': account_id,
+                          'awsRegion': detail.get('awsRegion', ''),
+                          'sourceIp': detail.get('sourceIPAddress', ''),
+                          'resourceName': resource_name,
+                          'resourceType': resource_type,
+                          'source': source,
+                          'eventName': event_name,
+                          'callerArn': caller_arn,
+                          'actionStatus': message['action_status'],
+                          'errorCode': message['error_code'],
+                          'errorMessage': message['error_message'],
+                          'rawDetail': raw_detail,
+                          'status': 'active',
+                          'ttl': int(time.time()) + ALERT_TTL_SECONDS,
+                      },
+                      ConditionExpression='attribute_not_exists(PK)',
+                  )
+                  print(f'Persisted | {account_id} | {resource_name} | {alert_id}')
+              except ddb.meta.client.exceptions.ConditionalCheckFailedException:
+                  # Redelivery of an event we already stored. Expected, not an error.
+                  print(f'Duplicate suppressed | {alert_id}')
+              except Exception as exc:
+                  print(f'[WARN] Failed to persist detection {alert_id}: {exc}')
+
+          def lambda_handler(event, context):
+              detail = event.get('detail', {})
+              source = event.get('source', 'Unknown')
+              event_name = detail.get('eventName', 'Unknown')
+              request_params = detail.get('requestParameters') or {}
+
+              caller_arn = detail.get('userIdentity', {}).get('arn', '')
+              if is_whitelisted(caller_arn):
+                  print(f"Suppressed (whitelisted): {caller_arn}")
+                  return {'statusCode': 200, 'body': 'Whitelisted - suppressed'}
+
+              resource_type = RESOURCE_TYPE_MAP.get(source, 'Unknown')
+              resource_name = get_resource_name(source, request_params)
+
+              subject = f"[{ALERT_LABEL}] Unauthorized access - {resource_type} - {event_name}"[:100]
+
+              message = detail.copy()
+              message['action_status'] = 'FAILED' if detail.get('errorCode') else 'SUCCESS'
+              message['error_code'] = detail.get('errorCode', 'None')
+              message['error_message'] = detail.get('errorMessage', 'None')
+
+              # A flat, stable contract for the SOAR platform to build automation on.
+              #
+              # Everything above this is the raw CloudTrail detail, whose shape varies by
+              # service -- the decoy identifier alone lives under bucketName, roleArn,
+              # topicArn, resourceArn, logGroupName and six others depending on the event.
+              # custom_fields resolves all of that once, here, so a workflow does not have
+              # to branch per service.
+              #
+              # decoy_name and service_type were previously computed and sent ONLY to
+              # DynamoDB, never to SNS -- so the two most platform-specific fields were
+              # absent from the payload a consumer actually receives.
+              #
+              # error_code/error_message are real nulls here, unlike the 'None' STRING kept
+              # at top level for the existing DynamoDB path. A truthiness test on the string
+              # 'None' passes, so every successful access would read as a failure.
+              #
+              # scenario_id is deliberately absent: the Lambda cannot read mirage-state (it
+              # holds PutItem on mirage-alerts and nothing else), so it has no way to map a
+              # decoy to its attack path. Correlation is handled SOAR-side.
+              identity = detail.get('userIdentity') or {}
+              session_issuer = (identity.get('sessionContext') or {}).get('sessionIssuer') or {}
+              message['custom_fields'] = {
+                  'User_identity':   caller_arn or None,
+                  'decoy_name':      resource_name,
+                  'event_name':      event_name,
+                  'service_type':    resource_type,
+                  'account_number':  detail.get('recipientAccountId') or event.get('account'),
+                  'eventTime':       detail.get('eventTime'),
+                  'eventSource':     detail.get('eventSource'),
+                  'eventID':         detail.get('eventID'),
+                  'action_status':   'FAILED' if detail.get('errorCode') else 'SUCCESS',
+                  'error_code':      detail.get('errorCode'),
+                  'error_message':   detail.get('errorMessage'),
+                  # awsRegion matters more than it looks: IAM is a global service recorded
+                  # only in us-east-1, while STS is recorded per-region, so the region an
+                  # event was logged in is not the region the operator was working in.
+                  'awsRegion':       detail.get('awsRegion'),
+                  'sourceIPAddress': detail.get('sourceIPAddress'),
+                  'userAgent':       detail.get('userAgent'),
+                  'readOnly':        detail.get('readOnly'),
+                  'identity_type':   identity.get('type'),
+                  'role_name':       session_issuer.get('userName'),
+                  'requestID':       detail.get('requestID'),
+              }
+
+              sns.publish(
+                  TopicArn=SNS_TOPIC_ARN,
+                  Subject=subject,
+                  Message=json.dumps(message, indent=2, default=str)
+              )
+
+              # Only true positives reach here — whitelisted callers returned above.
+              persist_alert(event, context, detail, source, event_name,
+                            resource_type, resource_name, caller_arn, message)
+
+              print(f"Alert | {source} | {resource_name} | {event_name}")
+              return {'statusCode': 200, 'body': f'Alert: {resource_type} - {resource_name}'}
+      # Tags: To be discussed (OPSEC)
+
+  V2LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: V2EventProcessor
+    Properties:
+      FunctionName: !Ref V2EventProcessor
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  V2GlobalEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub '${ResourcePrefix}-event-bus'
+
+  # Cross-account PutEvents grant. Without this the bus has NO resource policy
+  # and every spoke forward fails (FailedInvocations) - the spoke forwarding
+  # rule matches and assumes mirage-ops-forwarding-role, but PutEvents onto this
+  # bus is denied. Scoped to the org so any enrolled spoke can forward; if an
+  # OrgId is not provided, fall back to the hub account only (self-forward).
+  V2GlobalEventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      EventBusName: !Ref V2GlobalEventBus
+      StatementId: AllowOrgSpokesPutEvents
+      Statement:
+        Effect: Allow
+        Principal: "*"
+        Action: events:PutEvents
+        Resource: !GetAtt V2GlobalEventBus.Arn
+        Condition: !If
+          - HasOrgId
+          - StringEquals:
+              "aws:PrincipalOrgID": !Ref OrgId
+          - StringEquals:
+              "aws:PrincipalAccount": !Ref AWS::AccountId
+
+  V2InvokeLambdaRole:
+    Type: AWS::IAM::Role
+    DependsOn: V2EventProcessor
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-invoke-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TrustEventBridge
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: mirage-ops-invoke-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeLambda
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt V2EventProcessor.Arn
+      # Tags: To be discussed (OPSEC)
+
+  # ---------------------------------------------------------------------------
+  # PORTAL STATE (single-table DynamoDB — rules, scenarios, history, spokes, brains)
+  # ---------------------------------------------------------------------------
+
+  # Retain: a brain teardown must not destroy the record of what is deployed.
+  # Without it, a stack delete drops every scenario, rule and history row while
+  # the decoys stay live in the spoke -- orphaned resources the portal can no
+  # longer see or clean up. Metadata only: no replacement, no downtime.
+  MirageStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${ResourcePrefix}-state'
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      # Single-table design keyed only on PK/SK. All access patterns are served
+      # by Query on PK + begins_with(SK) or a small Scan (see src/lib/db.ts).
+      # The former RuleNameIndex / StatusIndex GSIs were never queried in code,
+      # so they (and their attribute definitions) are removed to cut write cost.
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: !Sub '${ResourcePrefix}-platform'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Decoy-access detections (Active Alerts). Separate from mirage-state so
+  # forensic data has its own blast radius: the event-processor Lambda gets an
+  # append-only PutItem grant here and can never reach control-plane items.
+  # Retain on both policies — an alert is evidence, so a stack rollback or an
+  # accidental stack delete must not destroy it.
+  MirageAlertsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${ResourcePrefix}-alerts'
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      # PK = DETECTION#<accountId>, SK = ALERT#<eventTime>-<eventID>.
+      # SK embeds an ISO timestamp, so a Query with ScanIndexForward=false
+      # returns newest-first straight from the index — no GSI needed.
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      # 1-year retention on detections, enforced by DynamoDB.
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Sub '${ResourcePrefix}-platform'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ---------------------------------------------------------------------------
+  # SHARED HUB STORAGE (part of the brain bundle)
+  #   Audit-logs bucket - EC2 host/operator audit (auditd/sudo/SSM).
+  # The Terraform state bucket is NOT here -- hub/hub-bootstrap.yaml creates and
+  # owns it, specifically so Terraform's own bootstrap doesn't depend on this
+  # CloudFormation stack existing first. EC2 itself is also not in the brain;
+  # only this shared bucket is.
+  # ---------------------------------------------------------------------------
+
+  MirageAuditLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !If
+        - HasAuditBucketName
+        - !Ref AuditLogsBucketName
+        - !Sub "${ResourcePrefix}-audit-logs-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: transition-ia
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 365
+      Tags:
+        - Key: Project
+          Value: !Sub '${ResourcePrefix}-platform'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  MirageAuditLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MirageAuditLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: "*"
+            # See the matching note on the tfstate bucket: NotAction keeps the
+            # bucket-policy APIs reachable so this Deny can always be undone.
+            NotAction:
+              - "s3:PutBucketPolicy"
+              - "s3:DeleteBucketPolicy"
+              - "s3:GetBucketPolicy"
+            Resource:
+              - !GetAtt MirageAuditLogsBucket.Arn
+              - !Sub "${MirageAuditLogsBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          # The EC2 portal instance role ships host/operator audit logs here.
+          # NOTE: this grants PutObject on host/* only, while
+          # scripts/backup-shared-to-s3.sh writes to box-backup/* -- so the
+          # nightly backup fails AccessDenied and `set -euo pipefail` aborts on
+          # the first copy. That prefix mismatch, NOT a missing IAM grant, is why
+          # git history still has no offsite copy. Reconcile the prefix (here or
+          # in the script) before claiming the backup works.
+          - !If
+            - HasInstanceRole
+            - Sid: AllowInstanceRolePut
+              Effect: Allow
+              Principal:
+                AWS: !Ref PortalInstanceRoleArn
+              Action:
+                - s3:PutObject
+                - s3:GetBucketLocation
+              Resource:
+                - !GetAtt MirageAuditLogsBucket.Arn
+                - !Sub "${MirageAuditLogsBucket.Arn}/host/*"
+            - !Ref AWS::NoValue
+
+Outputs:
+
+  SNSTopicArn:
+    Description: v2 alerts SNS topic ARN
+    Value: !Ref V2AlertsTopic
+    Export:
+      Name: !Sub '${ResourcePrefix}-sns-topic-arn'
+
+  LambdaFunctionArn:
+    Description: v2 event processor Lambda ARN
+    Value: !GetAtt V2EventProcessor.Arn
+    Export:
+      Name: !Sub '${ResourcePrefix}-lambda-arn'
+
+  LambdaFunctionName:
+    Description: v2 event processor Lambda name
+    Value: !Ref V2EventProcessor
+    Export:
+      Name: !Sub '${ResourcePrefix}-lambda-name'
+
+  GlobalEventBusArn:
+    Description: v2 global event bus ARN
+    Value: !GetAtt V2GlobalEventBus.Arn
+    Export:
+      Name: !Sub '${ResourcePrefix}-event-bus-arn'
+
+  GlobalEventBusName:
+    Description: v2 global event bus name
+    Value: !Ref V2GlobalEventBus
+    Export:
+      Name: !Sub '${ResourcePrefix}-event-bus-name'
+
+  InvokeLambdaRoleArn:
+    Description: v2 EventBridge invoke Lambda role ARN
+    Value: !GetAtt V2InvokeLambdaRole.Arn
+    Export:
+      Name: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  StateTableName:
+    Description: Mirage portal state DynamoDB table name (rules, scenarios, history, spokes)
+    Value: !Ref MirageStateTable
+    Export:
+      Name: !Sub '${ResourcePrefix}-state-table-name'
+
+  AlertsTableName:
+    Description: Decoy-access detections DynamoDB table name (Active Alerts)
+    Value: !Ref MirageAlertsTable
+    Export:
+      Name: !Sub '${ResourcePrefix}-alerts-table-name'
+
+  AuditLogsBucketName:
+    Description: Host/operator audit-logs bucket (EC2 auditd/sudo/SSM logs)
+    Value: !Ref MirageAuditLogsBucket
+    Export:
+      Name: !Sub '${ResourcePrefix}-audit-logs-bucket-name'
+

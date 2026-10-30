@@ -1,0 +1,96 @@
+{
+  "scenarioId": "scenario-6",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure roles (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    { "label": "Lambda env vars (seeded inline by Terraform)", "category": "lambda", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Third-party API credentials secret",
+      "category": "secretsmanager",
+      "sdkOperation": "secretsmanager:PutSecretValue",
+      "fakeDataFile": "api-credentials.json",
+      "format": "json"
+    },
+    {
+      "label": "Data-sync pipeline config parameter",
+      "category": "ssm",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "data-sync-config.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Pipeline config artifact",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "pipeline-config.json",
+      "format": "json",
+      "s3Key": "config/pipeline-config.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "Partner API keys artifact",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "partner-api-keys.json",
+      "format": "json",
+      "s3Key": "config/partner-api-keys.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "Analytics DB credentials artifact",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "database-credentials.json",
+      "format": "json",
+      "s3Key": "config/database-credentials.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "Field encryption keys artifact",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "encryption-keys.json",
+      "format": "json",
+      "s3Key": "config/encryption-keys.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "Third-party integration inventory",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "third-party-integrations.json",
+      "format": "json",
+      "s3Key": "config/third-party-integrations.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "Customer data export (CSV)",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "customer-data-export.csv",
+      "format": "text",
+      "s3Key": "exports/2026/04/customer-data-export.csv",
+      "contentType": "text/csv"
+    },
+    {
+      "label": "PCI-DSS 2024 Q4 assessment",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "pci-dss-2024-q4.json",
+      "format": "json",
+      "s3Key": "compliance/pci-dss-2024-q4.json",
+      "contentType": "application/json"
+    },
+    {
+      "label": "SOX controls 2024",
+      "category": "s3",
+      "sdkOperation": "s3:PutObject",
+      "fakeDataFile": "sox-controls-2024.json",
+      "format": "json",
+      "s3Key": "compliance/sox-controls-2024.json",
+      "contentType": "application/json"
+    }
+  ]
+}

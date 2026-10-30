@@ -1,0 +1,196 @@
+# NOTE TO OPEN-SOURCE USERS:
+# The resources in this scenario have been deployed with realistic, hardcoded names by default.
+# You can safely rename any resource manually in this file to fit your environment's naming conventions.
+
+variable "account_id" {
+  description = "AWS Account ID"
+  type        = string
+}
+
+variable "include_customer_profiles" {
+  description = "If true, deploys the prod-customer-profiles DynamoDB table"
+  type        = bool
+  default     = true
+}
+
+variable "include_active_sessions" {
+  description = "If true, deploys the prod-active-sessions DynamoDB table"
+  type        = bool
+  # Defaults to false because scenario-10 creates a table with this same name, and
+  # that table is its entire reason to exist. With both defaulting on, a full 19
+  # scenario deploy raced and whichever applied second died ResourceInUseException.
+  # Scenario 9's own target is prod-customer-profiles; the sessions table is a bonus
+  # here, so scenario 10 owns the name. Set true only if 10 is not deployed.
+  default = false
+}
+
+variable "role_name" {
+  description = "Name of the IAM role"
+  type        = string
+  default     = "customer-data-readonly-role"
+}
+
+variable "table_name" {
+  description = "Name of the DynamoDB table (primary, headline data store)"
+  type        = string
+  default     = "prod-customer-profiles"
+}
+
+provider "aws" {
+}
+
+resource "aws_iam_role" "customer_data_readonly_role" {
+  name                 = var.role_name
+  description          = "Read-only access to customer data stores for analytics and monitoring"
+  max_session_duration = 3600
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.account_id}:root"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Environment = "production"
+    Project     = "customer-platform"
+    ManagedBy   = "terraform"
+    CostCenter  = "CC-4210"
+  }
+}
+
+resource "aws_iam_role_policy" "customer_data_list_policy" {
+  name = "customer-data-list-policy"
+  role = aws_iam_role.customer_data_readonly_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "DynamoDBListTables"
+        Effect   = "Allow"
+        Action   = ["dynamodb:ListTables"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "customer_profiles_read_policy" {
+  count = var.include_customer_profiles ? 1 : 0
+  name  = "customer-profiles-readonly-policy"
+  role  = aws_iam_role.customer_data_readonly_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadCustomerProfiles"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeTable",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:GetItem"
+        ]
+        Resource = aws_dynamodb_table.customer_profiles_table[0].arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "active_sessions_read_policy" {
+  count = var.include_active_sessions ? 1 : 0
+  name  = "active-sessions-readonly-policy"
+  role  = aws_iam_role.customer_data_readonly_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadActiveSessions"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeTable",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:GetItem"
+        ]
+        Resource = aws_dynamodb_table.active_sessions_table[0].arn
+      }
+    ]
+  })
+}
+
+resource "aws_dynamodb_table" "customer_profiles_table" {
+  count        = var.include_customer_profiles ? 1 : 0
+  name         = var.table_name
+  billing_mode = "PAY_PER_REQUEST"
+
+  hash_key  = "customer_id"
+  range_key = "email"
+
+  attribute {
+    name = "customer_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "email"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Environment = "production"
+    Project     = "customer-platform"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_dynamodb_table" "active_sessions_table" {
+  count        = var.include_active_sessions ? 1 : 0
+  name         = "prod-active-sessions"
+  billing_mode = "PAY_PER_REQUEST"
+
+  hash_key  = "session_id"
+  range_key = "user_id"
+
+  attribute {
+    name = "session_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Environment = "production"
+    Project     = "auth-platform"
+    ManagedBy   = "terraform"
+  }
+}

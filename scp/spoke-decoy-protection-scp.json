@@ -1,0 +1,69 @@
+{
+  "Version": "2012-10-17",
+  "Comment": "Mirage spoke SCP - attach to each SPOKE account or OU. Replace <SPOKE_ACCOUNT_ID>, <BREAK_GLASS_ADMIN_ARN>, and <RESOURCE_PREFIX> (default 'mirage-ops', matching hub/hub-bootstrap.yaml's ResourcePrefix parameter) before attaching. SCPs cannot Allow, only Deny -- this is a guardrail that carves out the intended principal via a condition. Deliberately does NOT deny the decoy data plane (GetObject, GetSecretValue, GetParameter, Scan/GetItem, ...) -- touching a decoy IS the detection signal, so those reads must stay reachable by any principal. This only blocks management-plane mutation.",
+  "Statement": [
+    {
+      "Sid": "DecoyMutationOnlyViaSpokeDeployRole",
+      "Effect": "Deny",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:UpdateAssumeRolePolicy",
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:UpdateTable",
+        "sqs:CreateQueue",
+        "sqs:DeleteQueue",
+        "sqs:SetQueueAttributes",
+        "sns:CreateTopic",
+        "sns:DeleteTopic",
+        "sns:SetTopicAttributes",
+        "kms:CreateKey",
+        "kms:ScheduleKeyDeletion",
+        "kms:DisableKey",
+        "kms:PutKeyPolicy",
+        "ecr:CreateRepository",
+        "ecr:DeleteRepository",
+        "ecr:PutImage",
+        "ecr:BatchDeleteImage",
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "iam:CreateSAMLProvider",
+        "iam:DeleteSAMLProvider",
+        "iam:UpdateSAMLProvider"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:sts::<SPOKE_ACCOUNT_ID>:assumed-role/<RESOURCE_PREFIX>-spoke-deployment-role/*",
+            "<BREAK_GLASS_ADMIN_ARN>"
+          ]
+        }
+      }
+    }
+  ]
+}

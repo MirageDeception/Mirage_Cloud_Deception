@@ -1,0 +1,57 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+/docs/
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (secrets) — ignored. EXCEPT .env.example, the tracked, secret-free
+# template documenting every env var the portal reads (the reference for setup).
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# src/templates/ holds only the hand-authored hub CFN templates now (the old
+# external mirage-os scenario clone was removed; scenarios are vendored at the
+# repo-root scenarios/). Keep the hub templates tracked — they are the ONLY copy
+# and a `rsync --delete` from a fresh clone would otherwise wipe them off the box.
+# (Nothing under src/templates/ is ignored anymore; rule kept minimal + explicit.)
+!/src/templates/hub/monitoring-brain.yaml
+!/src/templates/hub/service-rules.yaml
+/states/
+/jobs/
+db_*.json
+db_*.txt
+*.swp

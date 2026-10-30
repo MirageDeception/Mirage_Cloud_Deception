@@ -1,0 +1,347 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Mirage Hub Account Service Rules.
+  Contains scalable, generic EventBridge rules per AWS service that forward to the Lambda.
+  (Decoy-specific resource filtering happens in the Spoke accounts)
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: mirage-ops
+    Description: >
+      Must match the ResourcePrefix this hub's monitoring-brain.yaml stack was
+      deployed with -- used only to resolve this stack's !ImportValue
+      references to that stack's Exports.
+
+Resources:
+
+  S3ServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-s3'
+      Description: "Routes S3 API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.s3]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetBucketAcl, GetBucketPolicy, GetBucketVersioning, GetBucketLocation, GetBucketLogging,
+            GetBucketEncryption, GetBucketTagging, GetBucketCORS, PutBucketPolicy, PutBucketAcl,
+            DeleteBucket, GetObject, PutObject, DeleteObject, HeadObject, CopyObject, ListObjects,
+            ListObjectsV2
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  SecretsManagerServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-secretsmanager'
+      Description: "Routes Secrets Manager API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.secretsmanager]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetSecretValue, DescribeSecret, PutSecretValue, DeleteSecret, RestoreSecret, RotateSecret,
+            UpdateSecret, GetResourcePolicy, PutResourcePolicy, DeleteResourcePolicy, CancelRotateSecret,
+            ReplicateSecretToRegions
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  SSMServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-ssm'
+      Description: "Routes SSM Parameter Store API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.ssm]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetParameter, GetParameters, GetParameterHistory, GetParametersByPath, PutParameter,
+            DeleteParameter, DeleteParameters, LabelParameterVersion
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  STSServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-sts'
+      Description: "Routes STS AssumeRole API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.sts]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            AssumeRole, AssumeRoleWithWebIdentity, AssumeRoleWithSAML, GetSessionToken,
+            GetFederationToken, DecodeAuthorizationMessage
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  EC2ServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-ec2'
+      Description: "Routes EC2 API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.ec2]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            StartInstances, AuthorizeSecurityGroupIngress, DescribeInstances, GetPasswordData,
+            GetConsoleOutput, ModifySnapshotAttribute, CreateSnapshot, DescribeSnapshots, CreateImage,
+            ModifyInstanceAttribute, AssociateIamInstanceProfile
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  ECRServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-ecr'
+      Description: "Routes ECR API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.ecr]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetDownloadUrlForLayer, BatchGetImage, BatchCheckLayerAvailability, DescribeImages,
+            GetRepositoryPolicy, GetAuthorizationToken, InitiateLayerUpload, DeleteRepository,
+            PutLifecyclePolicy, PutImageScanningConfiguration
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  LambdaServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-lambda'
+      Description: "Routes Lambda API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.lambda]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetFunction20150331v2, GetFunctionConfiguration20150331v2, GetPolicy20150331v2,
+            ListVersionsByFunction20150331, ListAliases20150331, GetFunctionConcurrency,
+            UpdateFunctionConfiguration20150331v2, UpdateFunctionCode20150331v2, AddPermission20150331v2,
+            RemovePermission20150331v2, DeleteFunction20150331
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  DynamoDBServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-dynamodb'
+      Description: "Routes DynamoDB API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.dynamodb]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetItem, BatchGetItem, Scan, Query, DescribeTable, DeleteTable, UpdateTable,
+            ExportTableToPointInTime, CreateBackup, RestoreTableFromBackup
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  SQSServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-sqs'
+      Description: "Routes SQS API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.sqs]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetQueueAttributes, ReceiveMessage, GetQueueUrl, SendMessage, DeleteMessage, PurgeQueue,
+            SetQueueAttributes, DeleteQueue, AddPermission
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  SNSServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-sns'
+      Description: "Routes SNS API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.sns]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetTopicAttributes, ListSubscriptionsByTopic, Publish, Subscribe, Unsubscribe,
+            SetTopicAttributes, DeleteTopic, AddPermission, RemovePermission,
+            ListTagsForResource
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  CloudWatchLogsServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-logs'
+      Description: "Routes CloudWatch Logs API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.logs]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetLogEvents, FilterLogEvents, CreateExportTask, StartQuery, GetQueryResults,
+            DescribeLogStreams, DeleteLogGroup, PutRetentionPolicy
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  KMSServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-kms'
+      Description: "Routes KMS API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.kms]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            Decrypt, Encrypt, GenerateDataKey, DescribeKey, GetKeyPolicy, PutKeyPolicy, DisableKey,
+            ScheduleKeyDeletion, CreateGrant, RetireGrant
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  IAMServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-iam'
+      Description: "Routes IAM API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.iam]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetRole, GetRolePolicy, ListRolePolicies, ListAttachedRolePolicies, AttachRolePolicy,
+            DetachRolePolicy, PutRolePolicy, DeleteRolePolicy, DeleteRole, UpdateRole,
+            UpdateAssumeRolePolicy, TagRole
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'
+
+  CloudFormationServiceRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}-svc-cloudformation'
+      Description: "Routes CloudFormation API calls to the central brain"
+      EventBusName:
+        Fn::ImportValue: !Sub '${ResourcePrefix}-event-bus-name'
+      State: ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS
+      EventPattern:
+        source: [aws.cloudformation]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [
+            GetTemplate, DescribeStacks, DescribeStackResources, DeleteStack, UpdateStack,
+            GetTemplateSummary, DescribeChangeSet, ExecuteChangeSet
+          ]
+      Targets:
+        - Id: V2Lambda
+          Arn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-lambda-arn'
+          RoleArn:
+            Fn::ImportValue: !Sub '${ResourcePrefix}-invoke-role-arn'

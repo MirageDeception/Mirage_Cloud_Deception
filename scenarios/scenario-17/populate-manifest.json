@@ -1,0 +1,15 @@
+{
+  "scenarioId": "scenario-17",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure roles (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    { "label": "Lambda env vars (seeded inline by Terraform)", "category": "lambda", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Enriched user profiles (PII + sales intelligence)",
+      "category": "dynamodb",
+      "sdkOperation": "dynamodb:PutItem",
+      "fakeDataFile": "enriched-users.json",
+      "format": "json"
+    }
+  ]
+}

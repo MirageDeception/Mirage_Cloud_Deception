@@ -1,0 +1,37 @@
+{
+  "scenarioId": "scenario-8",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM role-chaining lure roles (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "OIDC provider configuration parameter",
+      "category": "ssm",
+      "matchContains": "oidc-config",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "oidc-config.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Data lake service-account credentials parameter",
+      "category": "ssm",
+      "matchContains": "lake-credentials",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "lake-credentials.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    },
+    {
+      "label": "Admin console service-account credentials parameter",
+      "category": "ssm",
+      "matchContains": "console-credentials",
+      "sdkOperation": "ssm:PutParameter",
+      "fakeDataFile": "console-credentials.json",
+      "format": "json",
+      "ssmType": "String",
+      "ssmTier": "Standard"
+    }
+  ]
+}

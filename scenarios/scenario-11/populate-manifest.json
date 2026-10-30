@@ -1,0 +1,26 @@
+{
+  "scenarioId": "scenario-11",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure role (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Failed payment events (card tokens + internal endpoints)",
+      "category": "sqs",
+      "matchContains": "events.fifo",
+      "sdkOperation": "sqs:SendMessage",
+      "fakeDataFile": "payment-events.json",
+      "format": "json",
+      "messageGroupId": "settlement-batch-2026-04"
+    },
+    {
+      "label": "Dead-letter copies of the same failed events",
+      "category": "sqs",
+      "matchContains": "dlq",
+      "sdkOperation": "sqs:SendMessage",
+      "fakeDataFile": "payment-events.json",
+      "format": "json",
+      "maxItems": 3,
+      "messageGroupId": "settlement-batch-2026-04"
+    }
+  ]
+}

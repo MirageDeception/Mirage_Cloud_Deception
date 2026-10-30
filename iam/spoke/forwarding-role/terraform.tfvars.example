@@ -1,0 +1,6 @@
+account_id     = "222222222222"  # Spoke account where this forwarding role lives
+hub_account_id = "333333333333"  # REQUIRED - no default, replace with your hub account ID
+
+# resource_prefix defaults to the hub's standard naming prefix. Override only if the
+# hub was deployed with a non-default prefix (see the portal's resource prefix env var).
+# resource_prefix = "<your-prefix>"

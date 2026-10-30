@@ -1,0 +1,36 @@
+region          = "us-west-2"
+resource_prefix = "mirage-ops"
+instance_type   = "t3.medium"
+root_volume_gb  = 30
+
+# Bootstrap keypair (~/.ssh/mirage-bootstrap-ed25519). SSH ingress is CLOSED
+# (SSM-only access); the key pair is kept for break-glass SSH-over-SSM only.
+bootstrap_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyvLbAs6QK4dZ3POXKkzV5Tm0oYeOa9wp/kTFbqRlTk your-key-comment"
+
+# Private-subnet placement (vpc/ module output).
+vpc_id    = "<your-vpc-id>"
+subnet_id = "<your-private-subnet-id>" # from the vpc/ module's private_subnet_ids
+
+# Auth chain: instance role assumes this hub service role.
+hub_account_id = "<your-hub-account-id>"
+# hub_service_role_name defaults to "<resource_prefix>-hub-service-role"; override
+# only if the iam-hub/service-role module's role_name differs.
+
+# Self-modification lock: only break-glass (ADMIN SSO role) may alter the
+# instance role. Role-ARN form (condition needs the role ARN, not the session ARN).
+role_admin_arns = ["arn:aws:iam::<your-hub-account-id>:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_ADMIN_EXAMPLE"]
+
+# Optional: clone your Mirage fork and start the portal automatically on first boot.
+# Leave empty to bring the code up yourself after launch (see advanced/ssm-private/README.md).
+# repo_url = "https://github.com/<you>/mirage.git"
+# repo_ref = "main"
+
+# Portal .env.local seed (written by userdata). STORAGE_BACKEND starts 'local';
+# flip to 'aws' once the brain stack + "<resource_prefix>-state" table exist.
+# state_table defaults to "<resource_prefix>-state"; only set it to override.
+spoke_external_id = "<YOUR_EXTERNAL_ID_UUID>"
+storage_backend    = "local"
+
+# No CodePipeline in this path; code delivery is via repo_url (git clone) or a
+# manual clone. ci_source_bucket / ci_kms_key_arn are a legacy S3-zip pull path,
+# intentionally left empty.

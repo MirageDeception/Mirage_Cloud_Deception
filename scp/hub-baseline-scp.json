@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Comment": "Mirage hub SCP - attach to the HUB account (or its OU). Replace <BREAK_GLASS_ADMIN_ARN>, <HUB_ACCOUNT_ID>, and <RESOURCE_PREFIX> (default 'mirage-ops', matching hub/hub-bootstrap.yaml's ResourcePrefix parameter) before attaching. SCPs cannot Allow, only Deny -- these are guardrails that carve out the intended principal via a condition.",
+  "Statement": [
+    {
+      "Sid": "ProtectPortalInstanceFromCredTheft",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:ModifyInstanceAttribute",
+        "ec2:AssociateIamInstanceProfile",
+        "ec2:ReplaceIamInstanceProfileAssociation",
+        "ec2:DisassociateIamInstanceProfile"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalArn": "<BREAK_GLASS_ADMIN_ARN>"
+        },
+        "StringEquals": {
+          "aws:ResourceTag/Project": "<RESOURCE_PREFIX>-platform"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectPassRoleOfInstanceRole",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<HUB_ACCOUNT_ID>:role/<RESOURCE_PREFIX>-portal-instance-role",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalArn": "<BREAK_GLASS_ADMIN_ARN>"
+        }
+      }
+    }
+  ]
+}

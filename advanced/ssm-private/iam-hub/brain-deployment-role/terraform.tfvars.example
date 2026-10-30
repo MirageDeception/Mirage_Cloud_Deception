@@ -1,0 +1,8 @@
+hub_account_id  = "<your-hub-account-id>"
+resource_prefix = "mirage-ops"
+
+# Only the hub service role may assume this role.
+# Portal calls: SSO creds -> service role -> brain-deployment-role -> CloudFormation.
+trusted_principal_arns = [
+  "arn:aws:iam::<your-hub-account-id>:role/<resource_prefix>-hub-service-role",
+]

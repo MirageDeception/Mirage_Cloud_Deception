@@ -1,0 +1,36 @@
+{
+  "scenarioId": "scenario-2",
+  "version": 1,
+  "seeds": [
+    {
+      "label": "IAM lure role (no seed content)",
+      "category": "iam",
+      "sdkOperation": "none",
+      "fakeDataFile": null
+    },
+    {
+      "label": "Stripe keys secret",
+      "category": "secretsmanager",
+      "matchContains": "stripe-keys",
+      "sdkOperation": "secretsmanager:PutSecretValue",
+      "fakeDataFile": "stripe-keys.json",
+      "format": "json"
+    },
+    {
+      "label": "Braintree credentials secret",
+      "category": "secretsmanager",
+      "matchContains": "braintree-credentials",
+      "sdkOperation": "secretsmanager:PutSecretValue",
+      "fakeDataFile": "braintree-credentials.json",
+      "format": "json"
+    },
+    {
+      "label": "Internal service-accounts secret",
+      "category": "secretsmanager",
+      "matchContains": "service-accounts",
+      "sdkOperation": "secretsmanager:PutSecretValue",
+      "fakeDataFile": "service-accounts.json",
+      "format": "json"
+    }
+  ]
+}

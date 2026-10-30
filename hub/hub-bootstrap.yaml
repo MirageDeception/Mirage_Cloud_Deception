@@ -1,0 +1,896 @@
+AWSTemplateFormatVersion: '2010-09-09'
+# Mirage hub bootstrap: VPC, portal EC2 host, hub IAM roles, and the Terraform
+# state bucket -- everything needed before you can open the portal and deploy
+# the detection brain / decoy scenarios. One-time deploy, into the hub account.
+#
+# The SIMPLE path: a public subnet and a public IP (no NAT, no VPC interface
+# endpoints). AccessMode picks how you reach the portal: "public" opens SSH +
+# the UI to one CIDR you choose; "ssm" opens no inbound ports at all and you
+# reach the UI through an SSM port-forward (the public IP is then only used for
+# outbound downloads). For no public IP at all, use advanced/ssm-private/.
+#
+# Easiest install: run install.sh (repo root) in the hub account's CloudShell.
+# The stack's Outputs are the single source of config for everything
+# downstream (scripts/sync-env-from-stack.sh turns them into portal/.env.local).
+Description: >
+  Mirage hub bootstrap: VPC, portal EC2 host (portal installed and started on
+  first boot), hub IAM roles, and the Terraform state bucket.
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: mirage-ops
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+    Description: >
+      Prefix for every hub-infra resource name (roles, bucket, event bus,
+      tables, ...). Change this before deploying if you want to blend the
+      platform's own management-plane resources under a different name.
+      Decoy resource names (the actual lures) are configured separately, per
+      scenario -- this only renames the hub's own infrastructure.
+
+  OrgId:
+    Type: String
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+    Description: >
+      AWS Organizations ID (from `aws organizations describe-organization`).
+      Scopes which accounts the hub service role is allowed to reach into --
+      required even for a single-account trial, since the spoke trust policy
+      checks it too.
+
+  AccessMode:
+    Type: String
+    Default: public
+    AllowedValues: [public, ssm]
+    Description: >
+      How you reach the portal. "public": SSH (22) + UI (3000) open to
+      AllowedCidr only. "ssm": no inbound ports; use the PortalTunnelCommand
+      output (needs the AWS CLI + Session Manager plugin on your machine).
+
+  AllowedCidr:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    Description: >
+      AccessMode=public only: CIDR allowed to reach the portal host on SSH (22)
+      and the portal UI (3000) -- e.g. your own IP as "x.x.x.x/32". Must NOT be
+      0.0.0.0/0 (see Rules below). Widen only if you understand the exposure.
+
+  SshPublicKey:
+    Type: String
+    Default: ''
+    Description: AccessMode=public only -- your SSH public key (e.g. the contents of ~/.ssh/id_ed25519.pub) for the initial admin login.
+
+  AdditionalTrustedPrincipalArns:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >
+      Optional: IAM user/role ARNs (besides the portal instance role) allowed
+      to assume the hub service role and the brain deployment role directly --
+      e.g. your own SSO/IAM identity, for running scripts or the AWS console
+      without going through the portal. Leave empty to restrict to the portal
+      instance role only.
+
+  BreakGlassAdminArns:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >
+      Optional: principal ARNs allowed to modify the hub roles' own IAM
+      policies. When set, every OTHER principal (including the roles
+      themselves, if their credentials are stolen) is explicitly denied from
+      modifying them -- a stolen credential can use the role but cannot widen
+      it or change its trust to persist. Leave empty to skip this lock (no
+      regression from the project's prior default, which also shipped empty).
+
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type for the portal host.
+
+  RootVolumeGb:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    Description: Root EBS volume size (GB).
+
+  RepoUrl:
+    Type: String
+    Default: https://github.com/MirageDeception/Mirage_Cloud_Deception.git
+    Description: >
+      Public git URL the host clones Mirage from on first boot, then builds and
+      starts the portal. Point it at your fork if you have one. Leave empty to
+      bring the code up yourself after the instance is reachable.
+
+  RepoRef:
+    Type: String
+    Default: main
+    Description: Branch/tag to check out when RepoUrl is set.
+
+Rules:
+  DenyOpenCidr:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AllowedCidr, '0.0.0.0/0']]
+        AssertDescription: >
+          AllowedCidr must not be 0.0.0.0/0. This security group fronts a
+          console that can deploy and destroy cross-account AWS
+          infrastructure with no application-layer login of its own --
+          scope it to your own IP or office range.
+  PublicNeedsCidrAndKey:
+    RuleCondition: !Equals [!Ref AccessMode, public]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AllowedCidr, '']]
+        AssertDescription: AccessMode=public needs AllowedCidr (your IP as x.x.x.x/32).
+      - Assert: !Not [!Equals [!Ref SshPublicKey, '']]
+        AssertDescription: AccessMode=public needs SshPublicKey.
+
+Conditions:
+  IsPublic: !Equals [!Ref AccessMode, public]
+  HasBreakGlassAdmins: !Not [!Equals [!Select [0, !Ref BreakGlassAdminArns], '']]
+  HasAdditionalPrincipals: !Not [!Equals [!Select [0, !Ref AdditionalTrustedPrincipalArns], '']]
+
+Resources:
+  # ───────────────────────── Networking ─────────────────────────
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.90.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-hub-vpc' }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-hub-igw' }
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.90.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-hub-public' }
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-hub-public-rt' }
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PortalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !If [IsPublic, !Sub 'Mirage portal host - SSH + UI from ${AllowedCidr} only', 'Mirage portal host - no inbound, SSM access only']
+      VpcId: !Ref Vpc
+      SecurityGroupIngress: !If
+        - IsPublic
+        - - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref AllowedCidr, Description: SSH }
+          - { IpProtocol: tcp, FromPort: 3000, ToPort: 3000, CidrIp: !Ref AllowedCidr, Description: Portal UI }
+        - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - { IpProtocol: '-1', CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-portal-sg' }
+
+  # ───────────────────────── EBS encryption ─────────────────────────
+  EbsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Mirage portal - EBS volume encryption CMK
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RootAdministration
+            Effect: Allow
+            Principal: { AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root' }
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: EBSServiceEncryption
+            Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:CreateGrant
+              - kms:DescribeKey
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub 'ec2.${AWS::Region}.amazonaws.com'
+                kms:CallerAccount: !Ref AWS::AccountId
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-portal-ebs-cmk' }
+
+  EbsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ResourcePrefix}-portal-ebs'
+      TargetKeyId: !Ref EbsKey
+
+  # ───────────────────────── Terraform state bucket ─────────────────────────
+  # Created here, not by the brain stack, specifically to remove the backend
+  # chicken-and-egg problem: every Terraform step downstream (spoke IAM,
+  # decoy scenarios, the advanced/ssm-private/ modules if you use them) needs
+  # an S3 bucket to exist BEFORE it can run. CloudFormation needs no such
+  # bucket for its own state, so creating it here breaks the cycle.
+  TfStateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}-tfstate-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration: { Status: Enabled }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-tfstate' }
+
+  TfStateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TfStateBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt TfStateBucket.Arn
+              - !Sub '${TfStateBucket.Arn}/*'
+            Condition:
+              Bool: { 'aws:SecureTransport': false }
+
+  # ───────────────────────── Portal instance role ─────────────────────────
+  PortalInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-portal-instance-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        # SSM access as a free fallback login path (the public subnet already
+        # reaches the SSM/SSMMessages/EC2Messages public endpoints over the
+        # IGW -- no VPC interface endpoints needed) in case AllowedCidr ever
+        # stops matching your current egress IP.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: TfStateBucketObjectRW
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StateObjectRW
+                Effect: Allow
+                Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject']
+                Resource: !Sub '${TfStateBucket.Arn}/accounts/*'
+              - Sid: StateListBucket
+                Effect: Allow
+                Action: ['s3:ListBucket', 's3:GetBucketLocation']
+                Resource: !GetAtt TfStateBucket.Arn
+        - PolicyName: StateTableRW
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: MirageStateTableRW
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-state'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-state/index/*'
+              # Deliberately no PutItem/DeleteItem on the alerts table: only
+              # the brain Lambda creates an alert, so a compromised portal
+              # can neither fabricate nor destroy the forensic record.
+              - Sid: MirageAlertsTableReadUpdate
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DescribeTable
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-alerts'
+      Tags:
+        - { Key: Project, Value: !Sub '${ResourcePrefix}-platform' }
+
+  PortalInstanceSelfModLock:
+    Type: AWS::IAM::RolePolicy
+    Condition: HasBreakGlassAdmins
+    Properties:
+      PolicyName: DenySelfModificationExceptAdmins
+      RoleName: !Ref PortalInstanceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenySelfModificationExceptAdmins
+            Effect: Deny
+            Action:
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:UpdateAssumeRolePolicy
+              - iam:DeleteRole
+              - iam:UpdateRole
+            Resource: !GetAtt PortalInstanceRole.Arn
+            Condition:
+              StringNotEquals: { 'aws:PrincipalArn': !Ref BreakGlassAdminArns }
+
+  PortalInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ResourcePrefix}-portal-instance-profile'
+      Roles: [!Ref PortalInstanceRole]
+
+  # ───────────────────────── Hub service role (the chain's hop 1) ─────────────────────────
+  HubServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-hub-service-role'
+      Description: Jump role - the portal (or an operator) assumes this, then hops into spoke/brain deployment roles.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPortalInstanceRole
+            Effect: Allow
+            Principal: { AWS: !GetAtt PortalInstanceRole.Arn }
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals: { 'aws:PrincipalOrgID': !Ref OrgId }
+          - !If
+            - HasAdditionalPrincipals
+            - Sid: AllowAdditionalPrincipals
+              Effect: Allow
+              Principal: { AWS: !Ref AdditionalTrustedPrincipalArns }
+              Action: 'sts:AssumeRole'
+            - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: AssumeDownstreamRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AssumeSpokeDeploy
+                Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource: !Sub 'arn:aws:iam::*:role/${ResourcePrefix}-spoke-deployment-role'
+                Condition:
+                  StringEquals: { 'aws:ResourceOrgID': !Ref OrgId }
+        - PolicyName: TfStateBucketObjectRW
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StateObjectRW
+                Effect: Allow
+                Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject']
+                Resource: !Sub '${TfStateBucket.Arn}/accounts/*'
+              - Sid: StateListBucket
+                Effect: Allow
+                Action: ['s3:ListBucket', 's3:GetBucketLocation']
+                Resource: !GetAtt TfStateBucket.Arn
+      Tags:
+        - { Key: Project, Value: !Sub '${ResourcePrefix}-platform' }
+
+  HubServiceRoleSelfModLock:
+    Type: AWS::IAM::RolePolicy
+    Condition: HasBreakGlassAdmins
+    Properties:
+      PolicyName: DenySelfModificationExceptAdmins
+      RoleName: !Ref HubServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenySelfModificationExceptAdmins
+            Effect: Deny
+            Action:
+              - iam:UpdateAssumeRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:DeleteRole
+              - iam:UpdateRole
+            Resource: !GetAtt HubServiceRole.Arn
+            Condition:
+              StringNotEquals: { 'aws:PrincipalArn': !Ref BreakGlassAdminArns }
+
+  # A standalone RolePolicy, not inlined on PortalInstanceRole: PortalInstanceRole
+  # would need HubServiceRole.Arn and HubServiceRole's trust needs
+  # PortalInstanceRole.Arn, which is a circular dependency if both are inline on
+  # the two Role resources themselves. Pulling this one out breaks the cycle --
+  # this resource depends on both roles, but neither role depends on the other.
+  PortalInstanceAssumeHubServicePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: AssumeHubServiceRole
+      RoleName: !Ref PortalInstanceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeHubServiceRole
+            Effect: Allow
+            Action: 'sts:AssumeRole'
+            Resource: !GetAtt HubServiceRole.Arn
+
+  # ───────────────────────── Brain deployment role (hop 2a) ─────────────────────────
+  # Scoped to the hub's own CFN stacks/IAM roles/Lambda/SNS/bus/tables under
+  # ${ResourcePrefix}-*, plus the audit-logs bucket the brain stack creates.
+  # It does NOT get bucket-lifecycle permissions on the tfstate bucket -- this
+  # template already owns that bucket's lifecycle; the brain stack only ever
+  # needs it to exist, not to manage it.
+  BrainDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-brain-deployment-role'
+      Description: !Sub 'Deploys the hub monitoring CloudFormation stacks (${ResourcePrefix}-monitoring, ${ResourcePrefix}-service-rules)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowHubServiceRole
+            Effect: Allow
+            Principal: { AWS: !GetAtt HubServiceRole.Arn }
+            Action: 'sts:AssumeRole'
+          - !If
+            - HasAdditionalPrincipals
+            - Sid: AllowAdditionalPrincipals
+              Effect: Allow
+              Principal: { AWS: !Ref AdditionalTrustedPrincipalArns }
+              Action: 'sts:AssumeRole'
+            - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: DeployBrainStacks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudFormationStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStacks
+                  - cloudformation:ListStackResources
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ResourcePrefix}-monitoring/*'
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ResourcePrefix}-service-rules/*'
+              - Sid: CloudFormationValidate
+                Effect: Allow
+                Action: ['cloudformation:ValidateTemplate', 'cloudformation:GetTemplateSummary']
+                Resource: '*'
+              - Sid: IAMHubPlatformRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}-*'
+              - Sid: IAMPassRole
+                Effect: Allow
+                Action: 'iam:PassRole'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}-*'
+                Condition:
+                  StringEquals:
+                    'iam:PassedToService': ['lambda.amazonaws.com', 'events.amazonaws.com']
+              - Sid: Lambda
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:DeleteFunction
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:ListVersionsByFunction
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}-*'
+              - Sid: SNS
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:ListSubscriptionsByTopic
+                  - sns:AddPermission
+                  - sns:RemovePermission
+                  - sns:TagResource
+                  - sns:UntagResource
+                Resource: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}-*'
+              - Sid: EventBridgeBus
+                Effect: Allow
+                Action:
+                  - events:CreateEventBus
+                  - events:DeleteEventBus
+                  - events:DescribeEventBus
+                  - events:PutPermission
+                  - events:RemovePermission
+                  - events:ListEventBuses
+                  - events:TagResource
+                  - events:UntagResource
+                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/${ResourcePrefix}-*'
+              - Sid: EventBridgeRules
+                Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListRules
+                  - events:ListTargetsByRule
+                  - events:TagResource
+                  - events:UntagResource
+                Resource: !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/${ResourcePrefix}-event-bus/${ResourcePrefix}-*'
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagLogGroup
+                  - logs:TagResource
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*:*'
+              - Sid: DynamoDBBrainTables
+                Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-state'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ResourcePrefix}-alerts'
+              - Sid: S3AuditBucket
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketPolicy
+                  - s3:GetBucketPolicy
+                  - s3:DeleteBucketPolicy
+                  - s3:PutBucketVersioning
+                  - s3:GetBucketVersioning
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutBucketTagging
+                  - s3:GetBucketTagging
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !Sub 'arn:aws:s3:::${ResourcePrefix}-audit-logs-${AWS::AccountId}-${AWS::Region}'
+              - Sid: S3AuditBucketObjects
+                Effect: Allow
+                Action: ['s3:DeleteObject', 's3:DeleteObjectVersion', 's3:GetObjectVersion']
+                Resource: !Sub 'arn:aws:s3:::${ResourcePrefix}-audit-logs-${AWS::AccountId}-${AWS::Region}/*'
+      Tags:
+        - { Key: Project, Value: !Sub '${ResourcePrefix}-platform' }
+
+  BrainDeploymentRoleSelfModLock:
+    Type: AWS::IAM::RolePolicy
+    Condition: HasBreakGlassAdmins
+    Properties:
+      PolicyName: DenySelfModificationExceptAdmins
+      RoleName: !Ref BrainDeploymentRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenySelfModificationExceptAdmins
+            Effect: Deny
+            Action:
+              - iam:UpdateAssumeRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:DeleteRole
+              - iam:UpdateRole
+            Resource: !GetAtt BrainDeploymentRole.Arn
+            Condition:
+              StringNotEquals: { 'aws:PrincipalArn': !Ref BreakGlassAdminArns }
+
+  # Same circular-dependency reasoning as PortalInstanceAssumeHubServicePolicy
+  # above: HubServiceRole would need BrainDeploymentRole.Arn and
+  # BrainDeploymentRole's trust needs HubServiceRole.Arn.
+  HubServiceAssumeBrainDeployPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: AssumeBrainDeploy
+      RoleName: !Ref HubServiceRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeBrainDeploy
+            Effect: Allow
+            Action: 'sts:AssumeRole'
+            Resource: !GetAtt BrainDeploymentRole.Arn
+
+  # ───────────────────────── EC2 instance ─────────────────────────
+  BootstrapKeyPair:
+    Type: AWS::EC2::KeyPair
+    Condition: IsPublic
+    Properties:
+      KeyName: !Sub '${ResourcePrefix}-bootstrap-key'
+      PublicKeyMaterial: !Ref SshPublicKey
+      Tags:
+        - { Key: Project, Value: !Sub '${ResourcePrefix}-platform' }
+
+  PortalInstance:
+    Type: AWS::EC2::Instance
+    # The stack only completes once userdata signals the portal is built and
+    # running, so "CREATE_COMPLETE" means the portal is actually up.
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref PortalSecurityGroup]
+      KeyName: !If [IsPublic, !Ref BootstrapKeyPair, !Ref AWS::NoValue]
+      IamInstanceProfile: !Ref PortalInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeGb
+            Encrypted: true
+            KmsKeyId: !GetAtt EbsKey.Arn
+            DeleteOnTermination: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+            exec > >(tee -a /var/log/mirage-bootstrap.log) 2>&1
+            echo "=== Mirage portal bootstrap: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+
+            # Tell CloudFormation how this ended (see CreationPolicy). cfn-signal
+            # needs no credentials. A failure anywhere below signals failure, so the
+            # stack rolls back with a reason instead of hanging for 30 minutes.
+            dnf install -y aws-cfn-bootstrap
+            signal() { /opt/aws/bin/cfn-signal -e "$1" --stack ${AWS::StackName} --resource PortalInstance --region ${AWS::Region} || true; }
+            trap 'signal 1' ERR
+
+            dnf update -y
+            dnf install -y git jq unzip
+
+            curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+            dnf install -y nodejs
+            echo "Node: $(node --version)  npm: $(npm --version)"
+
+            TF_VERSION="1.10.5"
+            curl -fsSL "https://releases.hashicorp.com/terraform/${!TF_VERSION}/terraform_${!TF_VERSION}_linux_amd64.zip" -o /tmp/tf.zip
+            unzip -q /tmp/tf.zip -d /tmp && install -o root -g root -m 0755 /tmp/terraform /usr/local/bin/terraform && rm /tmp/tf.zip
+            echo "Terraform: $(terraform version | head -1)"
+
+            cat > /etc/ssh/sshd_config.d/99-mirage-hardening.conf << 'SSHEOF'
+            PasswordAuthentication no
+            PermitRootLogin no
+            PubkeyAuthentication yes
+            MaxAuthTries 3
+            LoginGraceTime 120
+            ClientAliveInterval 300
+            ClientAliveCountMax 2
+            ChallengeResponseAuthentication no
+            KerberosAuthentication no
+            GSSAPIAuthentication no
+            X11Forwarding no
+            SSHEOF
+            chmod 600 /etc/ssh/sshd_config.d/99-mirage-hardening.conf
+            systemctl reload sshd
+
+            mkdir -p /opt/mirage
+            chown ec2-user:ec2-user /opt/mirage
+
+            # STORAGE_BACKEND=aws from the start: before Deploy Brain creates the
+            # state table every read falls back to local files, and the brain record
+            # is written after the table exists -- so nothing needs switching later.
+            cat > /opt/mirage-portal.env << ENVLOCAL
+            MIRAGE_RESOURCE_PREFIX=${ResourcePrefix}
+            NEXT_PUBLIC_MIRAGE_RESOURCE_PREFIX=${ResourcePrefix}
+            MIRAGE_HUB_ACCOUNT_ID=${AWS::AccountId}
+            MIRAGE_HUB_SERVICE_ROLE_ARN=${HubServiceRole.Arn}
+            MIRAGE_ORG_ID=${OrgId}
+            MIRAGE_STATE_TABLE=${ResourcePrefix}-state
+            MIRAGE_TFSTATE_BUCKET=${TfStateBucket}
+            MIRAGE_PORTAL_INSTANCE_ROLE_ARN=${PortalInstanceRole.Arn}
+            MIRAGE_SPOKE_EXTERNAL_ID=${ExternalId}
+            STORAGE_BACKEND=aws
+            AWS_REGION=${AWS::Region}
+            AWS_DEFAULT_REGION=${AWS::Region}
+            ENVLOCAL
+            chown ec2-user:ec2-user /opt/mirage-portal.env
+            chmod 600 /opt/mirage-portal.env
+
+            if [ -n "${RepoUrl}" ]; then
+              echo "Cloning ${RepoUrl} (${RepoRef})..."
+              sudo -u ec2-user git clone --branch "${RepoRef}" "${RepoUrl}" /opt/mirage
+              cp /opt/mirage-portal.env /opt/mirage/portal/.env.local
+              chown ec2-user:ec2-user /opt/mirage/portal/.env.local
+              cd /opt/mirage/portal
+              sudo -u ec2-user npm ci
+              sudo -u ec2-user npm run build
+
+              # Warm the shared Terraform plugin cache once, so no deploy starts cold
+              # (cold + concurrent inits download a full provider copy each). scenario-17
+              # uses every provider the scenarios need (aws, archive, local).
+              sudo -u ec2-user bash -c 'W=$(mktemp -d) && cp -r /opt/mirage/scenarios/scenario-17/. "$W"/ && mkdir -p ~/.terraform.d/plugin-cache && cd "$W" && TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache terraform init -backend=false -input=false >/dev/null && cd / && rm -rf "$W"' \
+                || echo "WARNING: plugin cache warm-up failed; the first deploys will download providers"
+
+              cat > /etc/systemd/system/mirage-portal.service << UNIT
+            [Unit]
+            Description=Mirage portal
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            WorkingDirectory=/opt/mirage/portal
+            EnvironmentFile=/opt/mirage/portal/.env.local
+            ExecStart=/usr/bin/npm run start -- -p 3000
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+              systemctl daemon-reload
+              systemctl enable --now mirage-portal.service
+              for i in $(seq 1 30); do curl -sf -o /dev/null http://localhost:3000/ && break; sleep 2; done
+              curl -sf -o /dev/null http://localhost:3000/
+              echo "mirage-portal.service is serving on :3000"
+            else
+              echo "No RepoUrl given -- clone Mirage into /opt/mirage, copy /opt/mirage-portal.env to portal/.env.local, build and start it yourself."
+            fi
+
+            echo "=== Mirage portal bootstrap complete: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            signal 0
+          # Unique per stack, so every install gets its own ExternalId. It guards
+          # against confused-deputy use; it is not a credential.
+          - ExternalId: !Select [2, !Split ['/', !Ref 'AWS::StackId']]
+      Tags:
+        - { Key: Name, Value: !Sub '${ResourcePrefix}-portal' }
+        - { Key: Project, Value: !Sub '${ResourcePrefix}-platform' }
+
+Outputs:
+  ResourcePrefix:
+    Value: !Ref ResourcePrefix
+  HubAccountId:
+    Value: !Ref AWS::AccountId
+  Region:
+    Value: !Ref AWS::Region
+  OrgId:
+    Value: !Ref OrgId
+  VpcId:
+    Value: !Ref Vpc
+  PublicSubnetId:
+    Value: !Ref PublicSubnet
+  InstanceId:
+    Value: !Ref PortalInstance
+  InstancePublicIp:
+    Value: !GetAtt PortalInstance.PublicIp
+  AccessMode:
+    Value: !Ref AccessMode
+  PortalUrl:
+    Description: Changes if the instance is stopped and started (new public IP).
+    Value: !If
+      - IsPublic
+      - !Sub 'http://${PortalInstance.PublicIp}:3000'
+      - 'http://localhost:3000 (while PortalTunnelCommand is running)'
+  PortalTunnelCommand:
+    Description: Reach the portal from any IP. Needs the AWS CLI + Session Manager plugin.
+    Value: !Sub 'aws ssm start-session --region ${AWS::Region} --target ${PortalInstance} --document-name AWS-StartPortForwardingSession --parameters portNumber=3000,localPortNumber=3000'
+  SshCommand:
+    Condition: IsPublic
+    Value: !Sub 'ssh ec2-user@${PortalInstance.PublicIp}'
+  ExternalId:
+    Description: Pass to spoke onboarding as MIRAGE_SPOKE_EXTERNAL_ID.
+    Value: !Select [2, !Split ['/', !Ref 'AWS::StackId']]
+  SpokeOnboardCommand:
+    Description: Paste into CloudShell of each spoke account (signed in as an admin of that account).
+    Value: !Sub
+      - '(git clone -q --depth 1 -b ${RepoRef} ${RepoUrl} ~/mirage 2>/dev/null || git -C ~/mirage pull -q) && ORG_ID=${OrgId} HUB_ACCOUNT_ID=${AWS::AccountId} RESOURCE_PREFIX=${ResourcePrefix} MIRAGE_SPOKE_EXTERNAL_ID=${ExternalId} bash ~/mirage/iam/spoke/onboard-spoke.sh $(aws sts get-caller-identity --query Account --output text) ${AWS::Region}'
+      - ExternalId: !Select [2, !Split ['/', !Ref 'AWS::StackId']]
+  HubServiceRoleArn:
+    Value: !GetAtt HubServiceRole.Arn
+  BrainDeploymentRoleArn:
+    Value: !GetAtt BrainDeploymentRole.Arn
+  PortalInstanceRoleArn:
+    Value: !GetAtt PortalInstanceRole.Arn
+  TfStateBucket:
+    Value: !Ref TfStateBucket
+  EbsKmsKeyArn:
+    Value: !GetAtt EbsKey.Arn

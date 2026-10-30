@@ -1,0 +1,14 @@
+{
+  "scenarioId": "scenario-10",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure role (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "User session records (JWT + refresh tokens)",
+      "category": "dynamodb",
+      "sdkOperation": "dynamodb:PutItem",
+      "fakeDataFile": "session-records.json",
+      "format": "json"
+    }
+  ]
+}

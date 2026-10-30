@@ -1,0 +1,21 @@
+# Only needed for a direct `terraform apply` in this module. The normal path is
+# ../onboard-spoke.sh <ACCOUNT_ID>, which passes these on the command line and needs
+# no tfvars file at all.
+account_id     = "222222222222" # Dev spoke account
+hub_account_id = "333333333333" # REQUIRED - no default, replace with your hub account ID
+org_id         = "o-abc1234567" # REQUIRED - no default, replace with your AWS Organizations ID
+
+# resource_prefix defaults to the hub's standard naming prefix. Override only if the
+# hub was deployed with a non-default prefix (see the portal's resource prefix env var).
+# resource_prefix = "<your-prefix>"
+
+# external_id is intentionally omitted: it has a committed default in variables.tf so
+# onboarding needs no secret handoff. Set it here only to override during a rotation,
+# and remember the portal's CSC_OPS_EXTERNAL_ID must match whatever you use.
+# external_id = "<YOUR_EXTERNAL_ID_UUID>"
+
+# trusted_principal_arns defaults to [] — hub service role is the only caller.
+# Add SSO session ARNs here only for break-glass / direct Terraform runs:
+# trusted_principal_arns = [
+#   "arn:aws:sts::333333333333:assumed-role/AWSReservedSSO_ADMIN_06a2c70c065feb4e/EMAIL",
+# ]

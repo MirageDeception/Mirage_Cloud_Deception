@@ -1,0 +1,23 @@
+{
+  "scenarioId": "scenario-9",
+  "version": 1,
+  "seeds": [
+    { "label": "IAM lure role (no seed content)", "category": "iam", "sdkOperation": "none", "fakeDataFile": null },
+    {
+      "label": "Customer profile records (PII + card tokens)",
+      "category": "dynamodb",
+      "matchContains": "customer-profiles",
+      "sdkOperation": "dynamodb:PutItem",
+      "fakeDataFile": "customer-records.json",
+      "format": "json"
+    },
+    {
+      "label": "Active session records (JWT + refresh tokens)",
+      "category": "dynamodb",
+      "matchContains": "active-sessions",
+      "sdkOperation": "dynamodb:PutItem",
+      "fakeDataFile": "active-sessions.json",
+      "format": "json"
+    }
+  ]
+}

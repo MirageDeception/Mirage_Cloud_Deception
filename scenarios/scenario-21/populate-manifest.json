@@ -1,0 +1,18 @@
+{
+  "scenarioId": "scenario-21",
+  "version": 1,
+  "seeds": [
+    {
+      "label": "Finance ledger export role (no seed content)",
+      "category": "iam",
+      "sdkOperation": "none",
+      "fakeDataFile": null
+    },
+    {
+      "label": "Ledger export API key (value set in main.tf)",
+      "category": "ssm",
+      "sdkOperation": "none",
+      "fakeDataFile": null
+    }
+  ]
+}
